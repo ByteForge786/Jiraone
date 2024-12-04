@@ -1,94 +1,95 @@
-import requests
+from jira import JIRA
 import pandas as pd
-from requests.auth import HTTPBasicAuth
-import math
+from datetime import datetime
 
-def get_jira_issues(jira_url, project_key, username, api_token, max_results=100):
+def export_jira_issues_to_csv(username, password, jira_url, project_name):
     """
-    Fetch all issues from a JIRA project and export to CSV
+    Export all issues from a specified Jira project to a CSV file.
+    Uses maximum allowed batch size of 1000 issues per request.
     
-    Parameters:
-    jira_url (str): Your JIRA instance URL (e.g., 'https://your-domain.atlassian.net')
-    project_key (str): The project key (e.g., 'PROJ')
-    username (str): Your JIRA email
-    api_token (str): Your JIRA API token
-    max_results (int): Number of results per page
+    Args:
+        username (str): Jira username
+        password (str): Jira password/API token
+        jira_url (str): Jira instance URL
+        project_name (str): Project key/name in Jira
+    
+    Returns:
+        str: Path to the exported CSV file
     """
-    
-    # Initialize authentication and headers
-    auth = HTTPBasicAuth(username, api_token)
-    headers = {
-        "Accept": "application/json"
-    }
-    
-    # First API call to get total issue count
-    jql_query = f'project = {project_key}'
-    url = f"{jira_url}/rest/api/3/search"
-    
-    params = {
-        'jql': jql_query,
-        'maxResults': 0  # Just to get total count
-    }
-    
-    response = requests.get(url, headers=headers, auth=auth, params=params)
-    response.raise_for_status()
-    
-    total_issues = response.json()['total']
-    total_pages = math.ceil(total_issues / max_results)
-    
-    print(f"Total issues found: {total_issues}")
-    print(f"Total pages to process: {total_pages}")
-    
-    # Initialize list to store all issues
-    all_issues = []
-    
-    # Fetch all pages
-    for start_at in range(0, total_issues, max_results):
-        params = {
-            'jql': jql_query,
-            'maxResults': max_results,
-            'startAt': start_at,
-            'fields': 'summary,status,priority,assignee,created,updated,issuetype'
-        }
-        
-        response = requests.get(url, headers=headers, auth=auth, params=params)
-        response.raise_for_status()
-        
-        issues = response.json()['issues']
-        
-        # Process each issue
-        for issue in issues:
-            issue_data = {
-                'Key': issue['key'],
-                'Type': issue['fields']['issuetype']['name'],
-                'Summary': issue['fields']['summary'],
-                'Status': issue['fields']['status']['name'],
-                'Priority': issue['fields']['priority']['name'] if issue['fields']['priority'] else 'None',
-                'Assignee': issue['fields']['assignee']['displayName'] if issue['fields']['assignee'] else 'Unassigned',
-                'Created': issue['fields']['created'],
-                'Updated': issue['fields']['updated']
-            }
-            all_issues.append(issue_data)
-        
-        print(f"Processed {min(start_at + max_results, total_issues)} of {total_issues} issues")
-    
-    # Convert to DataFrame and export to CSV
-    df = pd.DataFrame(all_issues)
-    csv_filename = f"{project_key}_issues.csv"
-    df.to_csv(csv_filename, index=False)
-    print(f"\nExported {total_issues} issues to {csv_filename}")
-    
-    return total_issues, total_pages
-
-# Example usage:
-if __name__ == "__main__":
-    # Replace these with your actual values
-    JIRA_URL = "https://your-domain.atlassian.net"
-    PROJECT_KEY = "PROJ"
-    USERNAME = "your-email@domain.com"
-    API_TOKEN = "your-api-token"
-    
     try:
-        total_issues, total_pages = get_jira_issues(JIRA_URL, PROJECT_KEY, USERNAME, API_TOKEN)
-    except requests.exceptions.RequestException as e:
-        print(f"Error occurred: {e}")
+        # Initialize Jira client
+        jira = JIRA(
+            basic_auth=(username, password),
+            server=jira_url,
+            options={'verify': True}
+        )
+        
+        # Initialize empty list to store all issues
+        all_issues = []
+        
+        # Initial search with maximum allowed results per page (1000)
+        start_at = 0
+        max_results = 1000  # Jira's maximum limit
+        
+        while True:
+            # JQL query to get issues from the specified project
+            issues = jira.search_issues(
+                f'project = "{project_name}"',
+                startAt=start_at,
+                maxResults=max_results,
+                expand='changelog'
+            )
+            
+            # Break if no more issues
+            if len(issues) == 0:
+                break
+                
+            # Process each issue
+            for issue in issues:
+                issue_dict = {
+                    'Key': issue.key,
+                    'Summary': issue.fields.summary,
+                    'Status': issue.fields.status.name,
+                    'Issue Type': issue.fields.issuetype.name,
+                    'Priority': issue.fields.priority.name if hasattr(issue.fields, 'priority') and issue.fields.priority else 'None',
+                    'Reporter': issue.fields.reporter.displayName,
+                    'Assignee': issue.fields.assignee.displayName if issue.fields.assignee else 'Unassigned',
+                    'Created': issue.fields.created,
+                    'Updated': issue.fields.updated,
+                    'Description': issue.fields.description if issue.fields.description else '',
+                    'Labels': ','.join(issue.fields.labels) if issue.fields.labels else '',
+                }
+                
+                # Add custom fields if they exist
+                for field_name in issue.raw['fields']:
+                    if field_name.startswith('customfield_'):
+                        field_value = issue.raw['fields'][field_name]
+                        if field_value is not None:
+                            if isinstance(field_value, dict):
+                                field_value = field_value.get('value', '') or field_value.get('name', '')
+                            issue_dict[field_name] = str(field_value)
+                
+                all_issues.append(issue_dict)
+            
+            # Update start_at for next iteration
+            start_at += max_results
+            
+            # Optional: Print progress
+            print(f"Retrieved {len(all_issues)} issues so far...")
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(all_issues)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"jira_issues_{project_name}_{timestamp}.csv"
+        
+        # Export to CSV
+        df.to_csv(filename, index=False, encoding='utf-8')
+        
+        print(f"Successfully exported {len(all_issues)} issues to {filename}")
+        return filename
+        
+    except Exception as e:
+        print(f"Error occurred: {str(e)}")
+        raise
