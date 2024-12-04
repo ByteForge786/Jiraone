@@ -3,30 +3,32 @@ import requests
 import urllib3
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
-# Disable all warnings related to unsecure requests
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Disable all SSL related warnings
+urllib3.disable_warnings()
+urllib3.disable_warnings(InsecureRequestWarning)
+requests.packages.urllib3.disable_warnings()
 
-# Create a custom adapter with SSL verification disabled
-class SSLAdapter(requests.adapters.HTTPAdapter):
-    def init_poolmanager(self, *args, **kwargs):
-        kwargs['ssl_context'] = urllib3.util.ssl_.create_urllib3_context()
-        kwargs['assert_hostname'] = False
-        kwargs['cert_reqs'] = 'CERT_NONE'
-        return super().init_poolmanager(*args, **kwargs)
+# Set environment variables
+os.environ['REQUESTS_CA_BUNDLE'] = ''
+os.environ['PYTHONHTTPSVERIFY'] = '0'
 
-# Create custom session
-session = requests.Session()
-adapter = SSLAdapter()
-session.mount('https://', adapter)
-session.verify = False
+# Monkey patch requests to disable verification
+old_merge_environment_settings = requests.Session.merge_environment_settings
 
-# Import jiraone after setting up the session
-from jiraone import LOGIN
+def merge_environment_settings(self, url, proxies, stream, verify, cert):
+    settings = old_merge_environment_settings(self, url, proxies, stream, verify, cert)
+    settings['verify'] = False
+    return settings
 
-# Use the custom session when initializing LOGIN
+requests.Session.merge_environment_settings = merge_environment_settings
+
+# Now import jiraone
+from jiraone import LOGIN, endpoint
+
+# When using LOGIN, try with additional settings
 LOGIN(
     user="your_email",
-    password="your_token", 
-    url="your_jira_url",
-    session=session
+    password="your_token",
+    url="your_jira_url"
 )
+LOGIN.session.verify = False
