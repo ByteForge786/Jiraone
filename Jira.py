@@ -2,16 +2,16 @@ from jira import JIRA
 import pandas as pd
 from datetime import datetime
 
-def export_jira_issues_to_csv(username, password, jira_url, project_name):
+def export_jira_issues_to_csv(username, password, jira_url, project_name, jql_query=None):
     """
-    Export all issues from a specified Jira project to a CSV file.
-    Uses maximum allowed batch size of 1000 issues per request.
+    Export all issues from a specified Jira project to a CSV file using JQL.
     
     Args:
         username (str): Jira username
         password (str): Jira password/API token
         jira_url (str): Jira instance URL
         project_name (str): Project key/name in Jira
+        jql_query (str, optional): Custom JQL query. If None, defaults to all issues in project
     
     Returns:
         str: Path to the exported CSV file
@@ -27,14 +27,23 @@ def export_jira_issues_to_csv(username, password, jira_url, project_name):
         # Initialize empty list to store all issues
         all_issues = []
         
-        # Initial search with maximum allowed results per page (1000)
+        # Set up pagination parameters
         start_at = 0
         max_results = 1000  # Jira's maximum limit
         
+        # Construct JQL query
+        if jql_query is None:
+            jql_query = f'project = "{project_name}" ORDER BY created DESC'
+        elif 'project' not in jql_query.lower():
+            # Ensure project is included in custom JQL
+            jql_query = f'project = "{project_name}" AND ({jql_query})'
+            
+        print(f"Using JQL query: {jql_query}")
+        
         while True:
-            # JQL query to get issues from the specified project
+            # Search issues using JQL
             issues = jira.search_issues(
-                f'project = "{project_name}"',
+                jql_query,
                 startAt=start_at,
                 maxResults=max_results,
                 expand='changelog'
@@ -58,6 +67,9 @@ def export_jira_issues_to_csv(username, password, jira_url, project_name):
                     'Updated': issue.fields.updated,
                     'Description': issue.fields.description if issue.fields.description else '',
                     'Labels': ','.join(issue.fields.labels) if issue.fields.labels else '',
+                    'Resolution': issue.fields.resolution.name if issue.fields.resolution else 'Unresolved',
+                    'Components': ','.join([c.name for c in issue.fields.components]) if issue.fields.components else '',
+                    'Sprint': getattr(issue.fields, 'customfield_10020', 'No Sprint') if hasattr(issue.fields, 'customfield_10020') else 'No Sprint'
                 }
                 
                 # Add custom fields if they exist
@@ -74,7 +86,7 @@ def export_jira_issues_to_csv(username, password, jira_url, project_name):
             # Update start_at for next iteration
             start_at += max_results
             
-            # Optional: Print progress
+            # Print progress
             print(f"Retrieved {len(all_issues)} issues so far...")
         
         # Convert to DataFrame
